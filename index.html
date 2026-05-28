@@ -1,0 +1,819 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>北斗星網：救援指揮官</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- FontAwesome -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <!-- Three.js (用於 3D 渲染) -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <!-- OrbitControls (用於滑鼠控制 3D 視角) -->
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    
+    <style>
+        body { margin: 0; overflow: hidden; background-color: #000; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        #canvas-container { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 0; }
+        #ui-layer { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 10; pointer-events: none; display: flex; flex-direction: column; justify-content: space-between; p-4; }
+        .pointer-events-auto { pointer-events: auto; }
+        
+        /* 儀表板面板樣式 */
+        .glass-panel {
+            background: rgba(15, 23, 42, 0.75);
+            backdrop-filter: blur(10px);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+            box-shadow: 0 0 20px rgba(56, 189, 248, 0.1);
+        }
+        
+        /* 掃描線動畫 */
+        @keyframes scan {
+            0% { transform: translateY(-100%); }
+            100% { transform: translateY(100%); }
+        }
+        .scanline {
+            position: absolute; top: 0; left: 0; width: 100%; height: 2px;
+            background: rgba(56, 189, 248, 0.5);
+            animation: scan 2s linear infinite;
+            box-shadow: 0 0 10px rgba(56, 189, 248, 0.8);
+        }
+
+        /* 科幻簡潔風格覆寫 */
+        .glass-panel {
+            background: rgba(2, 6, 23, 0.85) !important; /* 更深的深色背景 */
+            backdrop-filter: blur(4px) !important;
+            border: 1px solid #0891b2 !important; /* 青色硬邊框 */
+            box-shadow: 0 0 15px rgba(8, 145, 178, 0.5), inset 0 0 20px rgba(8, 145, 178, 0.3) !important;
+            border-radius: 0 !important; /* 移除圓角，改為銳利邊緣 */
+            position: relative;
+        }
+        /* 科幻角落準星裝飾 (非對稱) */
+        .glass-panel::before, .glass-panel::after {
+            content: ''; position: absolute; width: 16px; height: 16px; border: 3px solid #22d3ee;
+        }
+        .glass-panel::before { top: -2px; left: -2px; border-right: none; border-bottom: none; }
+        .glass-panel::after { bottom: -2px; right: -2px; border-left: none; border-top: none; }
+        
+        /* 全域科幻字體與戰術網格背景 */
+        body {
+            font-family: 'Consolas', 'Courier New', monospace !important;
+            background-color: #020617;
+            background-image: 
+                linear-gradient(rgba(8, 145, 178, 0.15) 1px, transparent 1px),
+                linear-gradient(90deg, rgba(8, 145, 178, 0.15) 1px, transparent 1px);
+            background-size: 40px 40px;
+            letter-spacing: 0.05em;
+        }
+        
+        /* 按鈕與進度條銳利化 */
+        button { border-radius: 0 !important; text-transform: uppercase; }
+        .rounded-full, .rounded-lg, .rounded { border-radius: 0 !important; }
+
+        /* 文字發光特效 */
+        h1, h2, .text-blue-400, .text-yellow-400, .text-green-400, .text-red-400 {
+            text-shadow: 0 0 8px currentColor;
+        }
+        
+        /* 錯誤震動與紅光特效 */
+        @keyframes shake {
+            0%, 100% { transform: translate(0, 0); }
+            20%, 60% { transform: translate(-10px, 8px); }
+            40%, 80% { transform: translate(10px, -8px); }
+        }
+        .shake-effect { animation: shake 0.35s ease-in-out; }
+        
+        .damage-flash {
+            position: absolute; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(255, 0, 0, 0.35); z-index: 999; pointer-events: none;
+            opacity: 0; transition: opacity 0.5s ease-out; mix-blend-mode: overlay;
+        }
+        .damage-flash.active { opacity: 1; transition: none; }
+
+        /* 隱藏元素 */
+        .hidden { display: none !important; }
+    </style>
+</head>
+<body class="text-white">
+    <!-- 紅光特效層 -->
+    <div id="damage-overlay" class="damage-flash"></div>
+
+    <!-- 3D 渲染容器 -->
+    <div id="canvas-container"></div>
+
+    <!-- UI 覆蓋層 (總指揮官儀表板) -->
+    <div id="ui-layer" class="p-6">
+        
+        <!-- 頂部資訊列 -->
+        <div class="flex justify-between items-start pointer-events-auto">
+            <div class="glass-panel p-4 rounded-lg flex items-center gap-4">
+                <div class="text-4xl text-blue-400"><i class="fa-solid fa-satellite-dish"></i></div>
+                <div>
+                    <h1 class="text-xl font-bold tracking-widest text-blue-300">BDS 北斗指揮中心</h1>
+                    <p class="text-xs text-slate-400 font-mono" id="system-status">系統待命... 軌道參數正常</p>
+                </div>
+            </div>
+            
+            <div class="glass-panel p-4 rounded-lg text-right">
+                <div class="text-sm text-slate-300">任務階段</div>
+                <div class="text-lg font-bold text-yellow-400" id="phase-display">1. 待命中</div>
+                <!-- 獲救成功率進度計 -->
+                <div id="progress-container" class="hidden mt-2 w-32">
+                    <div class="text-[10px] text-slate-300 mb-1 flex justify-between">
+                        <span>獲救成功率</span>
+                        <span id="progress-text" class="text-green-400 font-bold">50%</span>
+                    </div>
+                    <div class="w-full bg-slate-700 rounded-full h-1.5">
+                        <div id="progress-bar" class="bg-green-500 h-1.5 rounded-full transition-all duration-500" style="width: 50%"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- 中間區域：任務面板 (根據階段切換) -->
+        <div class="flex-1 flex items-center justify-end pointer-events-auto mt-4">
+            
+            <!-- 階段 0: 遊戲開始 -->
+            <div id="panel-intro" class="glass-panel p-6 rounded-lg w-96 relative overflow-hidden">
+                <h2 class="text-xl font-bold text-white mb-2"><i class="fa-solid fa-circle-exclamation text-red-500 mr-2"></i>緊急狀況</h2>
+                <p class="text-sm text-slate-300 mb-4 leading-relaxed">
+                    指揮官，一支位於高山無訊號區的探險隊遭遇雪崩！他們利用北斗系統獨有的「短報文」功能發送了求救訊號。
+                </p>
+                <button onclick="startGame()" class="w-full bg-blue-600 hover:bg-blue-500 text-white font-bold py-2 px-4 rounded transition">
+                    接手任務
+                </button>
+            </div>
+
+            <!-- 階段 1: 短報文解碼 -->
+            <div id="panel-decode" class="glass-panel p-6 rounded-lg w-96 relative overflow-hidden hidden">
+                <div class="scanline"></div>
+                <h2 class="text-xl font-bold text-yellow-400 mb-2"><i class="fa-solid fa-envelope-open-text mr-2"></i>接收到加密短報文</h2>
+                <p class="text-xs text-slate-400 mb-4">探險隊裝置電量過低，發出了位移加密的訊號。請解碼出他們的經緯度。</p>
+                
+                <div class="bg-black/50 p-3 rounded font-mono text-sm mb-4 border border-slate-600">
+                    <span class="text-slate-500">原始訊號：</span><br>
+                    <span class="text-red-400 font-bold tracking-widest">MBU: 30, MPO: 100</span><br>
+                    <span class="text-xs text-slate-500 mt-1 block">(提示：英文字母往前推 1 個字元)</span>
+                </div>
+
+                <div class="space-y-3">
+                    <input type="text" id="decode-input" placeholder="輸入解碼後的字母 (如: LAT: 30...)" class="w-full bg-slate-800 border border-slate-600 rounded p-2 text-white font-mono focus:border-blue-500 outline-none">
+                    <button onclick="checkDecode()" class="w-full bg-indigo-600 hover:bg-indigo-500 font-bold py-2 rounded transition">
+                        驗證座標
+                    </button>
+                    <p id="decode-error" class="text-red-400 text-xs hidden">解碼錯誤，請再試一次！(答案為 LAT 30 LON 100)</p>
+                </div>
+            </div>
+
+            <!-- 階段 2: 星網定位 -->
+            <div id="panel-positioning" class="glass-panel p-6 rounded-lg w-96 hidden">
+                <h2 class="text-xl font-bold text-blue-400 mb-2"><i class="fa-solid fa-satellite mr-2"></i>衛星聯網定位</h2>
+                <p class="text-xs text-slate-300 mb-3">目標座標已確認。請從星網中調用至少 <strong class="text-yellow-400">4 顆</strong> 衛星建立通訊，以獲取精準的空間三維座標與時間校正。</p>
+                
+                <div class="flex justify-between items-center mb-2">
+                    <span class="text-sm font-bold">已連線衛星：</span>
+                    <span id="sat-count" class="bg-blue-900 text-blue-300 px-2 py-1 rounded text-xs">0 / 4</span>
+                </div>
+                
+                <div class="grid grid-cols-2 gap-2 mb-4" id="sat-buttons">
+                    <!-- 按鈕由 JS 動態生成 -->
+                </div>
+
+                <div class="bg-blue-900/40 border border-blue-700 p-2 rounded text-xs text-blue-200 mb-4">
+                    <i class="fa-solid fa-lightbulb text-yellow-400"></i> 教學：為什麼需要 4 顆衛星？前 3 顆用於交會出三維位置 (X,Y,Z)，第 4 顆用來消除時間誤差！
+                </div>
+
+                <button id="btn-fix-pos" onclick="completePositioning()" class="w-full bg-slate-600 text-slate-400 font-bold py-2 rounded cursor-not-allowed" disabled>
+                    開始解算定位...
+                </button>
+            </div>
+
+            <!-- 階段 2.5: 文字冒險與問答 (新增) -->
+            <div id="panel-quiz" class="glass-panel p-6 rounded-lg w-96 hidden">
+                <div class="flex justify-between items-center mb-4 border-b border-slate-600 pb-2">
+                    <h2 class="text-xl font-bold text-indigo-400"><i class="fa-solid fa-walkie-talkie mr-2"></i>維持通訊連線</h2>
+                    <div class="text-red-400 font-bold text-xl bg-red-900/30 px-3 py-1 rounded" id="quiz-timer">10s</div>
+                </div>
+                <p class="text-sm text-slate-200 mb-4 min-h-[3rem]" id="quiz-question">正在建立穩定連線... 請回答系統驗證問題以維持訊號傳輸。</p>
+                
+                <div class="space-y-3" id="quiz-options">
+                    <!-- 選項按鈕由 JS 動態生成 -->
+                </div>
+            </div>
+
+            <!-- 任務失敗面板 (新增) -->
+            <div id="panel-fail" class="glass-panel p-6 rounded-lg w-96 hidden text-center">
+                <div class="text-6xl text-red-500 mb-4"><i class="fa-solid fa-triangle-exclamation"></i></div>
+                <h2 class="text-2xl font-bold text-white mb-2">連線中斷！</h2>
+                <p class="text-sm text-slate-300 mb-4" id="fail-reason">
+                    訊號維持失敗。
+                </p>
+                <button onclick="location.reload()" class="bg-red-600 hover:bg-red-500 font-bold py-2 px-6 rounded transition shadow-lg shadow-red-600/30">
+                    <i class="fa-solid fa-rotate-right mr-2"></i>重新開始任務
+                </button>
+            </div>
+
+            <!-- 階段 3: 路線發送 -->
+            <div id="panel-route" class="glass-panel p-6 rounded-lg w-96 hidden">
+                <h2 class="text-xl font-bold text-green-400 mb-2"><i class="fa-solid fa-route mr-2"></i>發送撤離路線</h2>
+                <p class="text-xs text-slate-300 mb-4">定位完成！系統已運算出最佳安全路線 (稜線，低風險)。請透過短報文將撤離路線發送給探險隊。</p>
+
+                <button onclick="sendRoute()" class="w-full bg-green-600 hover:bg-green-500 font-bold py-2 rounded transition shadow-[0_0_15px_rgba(34,197,94,0.5)]">
+                    <i class="fa-solid fa-paper-plane mr-2"></i>發送短報文導航
+                </button>
+            </div>
+
+            <!-- 階段 4: 任務完成 -->
+            <div id="panel-success" class="glass-panel p-6 rounded-lg w-96 hidden text-center">
+                <div class="text-6xl text-green-400 mb-4"><i class="fa-solid fa-shield-check"></i></div>
+                <h2 class="text-2xl font-bold text-white mb-2">救援成功！</h2>
+                <p class="text-sm text-slate-300 mb-4">
+                    探險隊已收到短報文安全撤離。<br><br>
+                    本次任務完美展現了北斗系統的**全球覆蓋定位**與**短報文通訊**雙重優勢！
+                </p>
+                <button onclick="location.reload()" class="bg-blue-600 hover:bg-blue-500 font-bold py-2 px-6 rounded transition">
+                    返回指揮中心
+                </button>
+            </div>
+
+        </div>
+    </div>
+
+    <!-- 遊戲邏輯與 Three.js 腳本 -->
+    <script>
+        // --- 1. 遊戲狀態管理 ---
+        let connectedSats = 0;
+        let targetPosition = null;
+        let targetMarker = null;
+        let satConnections = []; // 儲存雷射光束的陣列
+        
+        // 新增：鏡頭與路徑追蹤狀態
+        let trackingTarget = false;
+        let currentLat = 30;
+        let currentLon = 100;
+        let targetMarkerTargetPos = null;
+        let rescuePathPoints = [];
+        let rescueRouteLine = null;
+        
+        // 答題系統狀態
+        let currentQ = 0;
+        let successRate = 50;
+        let timer = null;
+        let timeLeft = 10;
+        
+        const quizQuestions = [
+            {
+                q: "探險隊所在區域無一般網路，為何北斗系統仍能收到求救？",
+                options: ["因為北斗有雙向短報文功能", "探險隊使用了魔法", "北斗依賴 5G 網路"],
+                answer: 0
+            },
+            {
+                q: "我們剛才連結了 4 顆衛星。前 3 顆用於定位，第 4 顆的作用是？",
+                options: ["作為備用衛星", "消除時間誤差", "加強網路頻寬"],
+                answer: 1
+            },
+            {
+                q: "北斗衛星導航系統 (BDS) 是由哪個國家自主建設運行的？",
+                options: ["美國", "俄羅斯", "中國"],
+                answer: 2
+            },
+            {
+                q: "北斗系統的星座主要由哪三種軌道的衛星組成？",
+                options: ["GEO、IGSO、MEO", "LEO、MEO、GEO", "只有 MEO"],
+                answer: 0
+            },
+            {
+                q: "除了導航定位與短報文，北斗系統還能提供哪項重要服務？",
+                options: ["全球免費 Wi-Fi", "國際搜救與精密授時", "攔截流星雨"],
+                answer: 1
+            },
+            {
+                q: "目前全球提供服務的北斗系統是第幾代？",
+                options: ["第一代", "第二代", "第三代 (BDS-3)"],
+                answer: 2
+            },
+            {
+                q: "在戶外使用北斗導航時，以下哪種環境最容易導致「訊號遮蔽」？",
+                options: ["開闊的草原", "茂密的森林或高樓峽谷", "寧靜的湖面"],
+                answer: 1
+            },
+            {
+                q: "全球衛星導航系統 (GNSS) 中，除了北斗，還有美國的 GPS、歐洲的 Galileo，以及俄羅斯的什麼系統？",
+                options: ["GLONASS", "Starlink", "Apollo"],
+                answer: 0
+            },
+            {
+                q: "相較於其他導航系統，北斗的「星基增強系統 (SBAS)」有什麼功用？",
+                options: ["提供高精度、公分級的定位服務", "增加手機電池容量", "取代傳統基地台"],
+                answer: 0
+            },
+            {
+                q: "短報文在北斗三號系統中有什麼重大突破？",
+                options: ["可以傳送 4K 影片", "升級為「全球」短報文通訊", "必須連接 Wi-Fi 才能使用"],
+                answer: 1
+            },
+            {
+                q: "北斗衛星導航系統的「三步走」發展戰略中，第一步（北斗一號）主要服務哪個區域？",
+                options: ["全球範圍", "中國及周邊地區", "僅限海洋區域"],
+                answer: 1
+            },
+            {
+                q: "北斗一號系統（雙星定位系統）大約於哪一年正式建成並投入服務？",
+                options: ["1990年", "2000年", "2010年"],
+                answer: 1
+            },
+            {
+                q: "北斗二號系統於哪一年完成建設，實現了對亞太地區的覆蓋？",
+                options: ["2008年", "2012年", "2018年"],
+                answer: 1
+            },
+            {
+                q: "北斗三號全球衛星導航系統於哪一年正式開通，標誌著北斗真正走向全球？",
+                options: ["2015年", "2020年", "2025年"],
+                answer: 1
+            },
+            {
+                q: "相比 GPS 等單一軌道系統，北斗導航系統在軌道設計上有什麼獨特之處？",
+                options: ["採用 GEO、IGSO、MEO 混合星座設計", "只有低軌道衛星", "完全不使用地球靜止軌道"],
+                answer: 0
+            },
+            {
+                q: "北斗三號系統搭載的新一代「星載銣原子鐘」，被譽為導航衛星的「心臟」，其精度達到了什麼級別？",
+                options: ["一百年差一秒", "一萬年差一秒", "三百萬年差一秒"],
+                answer: 2
+            },
+            {
+                q: "北斗系統的「星間鏈路」技術解決了什麼關鍵問題？",
+                options: ["讓衛星之間能直接通訊，實現一星通、星星通，減少對全球地面站的依賴", "提供地面手機的 5G 通訊訊號", "增加衛星在軌道上的飛行速度"],
+                answer: 0
+            },
+            {
+                q: "聯合國認可的四大全球衛星導航系統（GNSS）除了北斗、GPS、GLONASS 之外，還有哪一個？",
+                options: ["印度的 NavIC", "日本的 QZSS", "歐洲的 Galileo (伽利略)"],
+                answer: 2
+            },
+            {
+                q: "在北斗三號系統中，主要承擔「全球」定位導航授時任務的衛星是運行在哪個軌道上？",
+                options: ["MEO (中圓地球軌道)", "GEO (地球靜止軌道)", "IGSO (傾斜地球同步軌道)"],
+                answer: 0
+            },
+            {
+                q: "北斗系統的短報文通訊功能，每次除了發送文字訊息外，通常還會自動夾帶什麼關鍵資訊以利救援？",
+                options: ["使用者的心率數據", "發送者的精確位置座標", "周圍的環境音檔"],
+                answer: 1
+            }
+        ];
+
+        // 切換 UI 面板
+        function showPanel(panelId, phaseText) {
+            ['panel-intro', 'panel-decode', 'panel-positioning', 'panel-quiz', 'panel-route', 'panel-success', 'panel-fail'].forEach(id => {
+                document.getElementById(id).classList.add('hidden');
+            });
+            document.getElementById(panelId).classList.remove('hidden');
+            document.getElementById('phase-display').innerText = phaseText;
+        }
+
+        function startGame() {
+            showPanel('panel-decode', '2. 短報文解析中');
+            document.getElementById('system-status').innerText = "警告：接收到不明短報文訊號";
+        }
+
+        // 短報文解碼邏輯 (MBU -> LAT, MPO -> LON)
+        function checkDecode() {
+            const input = document.getElementById('decode-input').value.toUpperCase();
+            // 容錯處理，只要包含 LAT 和 LON 且數字對即可
+            if (input.includes('LAT') && input.includes('LON')) {
+                document.getElementById('decode-error').classList.add('hidden');
+                document.getElementById('system-status').innerText = "座標解算完成：北緯30度, 東經100度";
+                
+                // 在 3D 地球上顯示目標點
+                showTargetOnEarth(30, 100);
+                
+                showPanel('panel-positioning', '3. 建立星網連線');
+                generateSatButtons();
+                
+                // 相機拉近目標
+                focusCameraOnTarget();
+            } else {
+                document.getElementById('decode-error').classList.remove('hidden');
+            }
+        }
+
+        // 衛星按鈕生成與連線邏輯
+        function generateSatButtons() {
+            const container = document.getElementById('sat-buttons');
+            container.innerHTML = '';
+            // 提供 6 顆衛星讓玩家選 4 顆
+            for(let i=1; i<=6; i++) {
+                const btn = document.createElement('button');
+                btn.className = 'bg-slate-700 hover:bg-slate-600 text-white text-xs py-2 rounded transition border border-slate-500';
+                btn.innerHTML = `<i class="fa-solid fa-satellite mr-1"></i> BDS-${i}號`;
+                btn.onclick = function() {
+                    if (this.classList.contains('bg-blue-600')) return; // 已連線
+                    if (connectedSats >= 4) return;
+                    
+                    this.classList.remove('bg-slate-700');
+                    this.classList.add('bg-blue-600', 'border-blue-400');
+                    connectedSats++;
+                    document.getElementById('sat-count').innerText = `${connectedSats} / 4`;
+                    
+                    // 3D 視覺效果：發射雷射光連線到目標
+                    createLaserBeam(satellites[i-1].mesh.position, targetMarker.position);
+
+                    if (connectedSats === 4) {
+                        const fixBtn = document.getElementById('btn-fix-pos');
+                        fixBtn.disabled = false;
+                        fixBtn.classList.remove('bg-slate-600', 'text-slate-400', 'cursor-not-allowed');
+                        fixBtn.classList.add('bg-yellow-500', 'hover:bg-yellow-400', 'text-black');
+                        fixBtn.innerText = "完成定位，規劃路線！";
+                    }
+                };
+                container.appendChild(btn);
+            }
+        }
+
+        function completePositioning() {
+            showPanel('panel-quiz', '3.5 穩定通訊連線');
+            document.getElementById('system-status').innerText = "定位成功。準備傳輸導航資料，請維持連線...";
+            document.getElementById('progress-container').classList.remove('hidden');
+            
+            // 啟動平滑鏡頭追蹤
+            trackingTarget = true;
+            
+            // 初始化答題進度並隨機打亂題庫順序
+            currentQ = 0;
+            successRate = 50;
+            updateProgressUI();
+            
+            quizQuestions.sort(() => Math.random() - 0.5);
+            
+            loadQuestion();
+        }
+
+        // --- 答題系統邏輯 ---
+        function loadQuestion() {
+            // 檢查勝負條件
+            if (successRate >= 100) {
+                showPanel('panel-route', '4. 短報文路線導航');
+                document.getElementById('system-status').innerText = "通訊穩定，成功率達 100%。請下達導航指令。";
+                return;
+            } else if (successRate <= 0) {
+                failMission("獲救成功率歸零，通訊徹底中斷！");
+                return;
+            }
+
+            if (currentQ >= quizQuestions.length) {
+                // 如果 10 題全部答完，且成功率仍大於等於 50%，勉強通過
+                if (successRate >= 50) {
+                    showPanel('panel-route', '4. 短報文路線導航');
+                    document.getElementById('system-status').innerText = `通訊勉強維持 (成功率 ${successRate}%)。請下達導航指令。`;
+                } else {
+                    failMission("最終成功率過低，無法維持通訊！");
+                }
+                return;
+            }
+            
+            const q = quizQuestions[currentQ];
+            document.getElementById('quiz-question').innerText = q.q;
+            const optionsDiv = document.getElementById('quiz-options');
+            optionsDiv.innerHTML = '';
+            
+            q.options.forEach((opt, index) => {
+                const btn = document.createElement('button');
+                btn.className = "w-full bg-slate-800 hover:bg-slate-700 border border-slate-600 p-3 rounded text-left transition text-sm text-white flex items-center";
+                btn.innerHTML = `<span class="bg-blue-900 text-blue-300 font-bold px-2 py-1 rounded mr-3">${String.fromCharCode(65 + index)}</span> ${opt}`;
+                btn.onclick = () => checkAnswer(index);
+                optionsDiv.appendChild(btn);
+            });
+            
+            // 重置計時器
+            timeLeft = 10;
+            document.getElementById('quiz-timer').innerText = timeLeft + "s";
+            clearInterval(timer);
+            timer = setInterval(() => {
+                timeLeft--;
+                document.getElementById('quiz-timer').innerText = timeLeft + "s";
+                if (timeLeft <= 0) {
+                    clearInterval(timer);
+                    handleTimeout();
+                }
+            }, 1000);
+        }
+
+        function handleTimeout() {
+            successRate -= 10;
+            updateProgressUI();
+            // 移除 currentQ++，讓玩家停留在原題目
+            const optionsDiv = document.getElementById('quiz-options');
+            optionsDiv.innerHTML = `<div class="text-yellow-400 text-center font-bold py-6 text-lg animate-pulse"><i class="fa-solid fa-clock mr-2"></i>超時未答！成功率下降 10%！</div>`;
+            triggerDamageEffect();
+            setTimeout(loadQuestion, 1200);
+        }
+
+        // 觸發錯誤時的畫面震動與紅光
+        function triggerDamageEffect() {
+            document.body.classList.add('shake-effect');
+            document.getElementById('damage-overlay').classList.add('active');
+            setTimeout(() => {
+                document.body.classList.remove('shake-effect');
+                document.getElementById('damage-overlay').classList.remove('active');
+            }, 350);
+        }
+
+        function checkAnswer(idx) {
+            clearInterval(timer);
+            const q = quizQuestions[currentQ];
+            const optionsDiv = document.getElementById('quiz-options');
+            
+            if (idx === q.answer) {
+                // 答對
+                successRate += 10;
+                updateProgressUI();
+                currentQ++;
+                optionsDiv.innerHTML = `<div class="text-green-400 text-center font-bold py-6 text-lg animate-pulse"><i class="fa-solid fa-circle-check mr-2"></i>驗證正確！成功率上升 10%！</div>`;
+                
+                // 目標移動與路徑繪製 (限定 180 度前進，避免回頭)
+                // 讓經度 (Lon) 永遠保持正向增加 (向東)，緯度 (Lat) 隨機南北偏移
+                const dirLon = 1.5 + Math.random() * 2.5; 
+                const dirLat = (Math.random() - 0.5) * 5; 
+                currentLat += dirLat; 
+                currentLon += dirLon; 
+                targetMarkerTargetPos = getCartesianCoord(currentLat, currentLon, 5);
+                rescuePathPoints.push(getCartesianCoord(currentLat, currentLon, 5.05)); // 高度稍微墊高避免閃爍
+                
+                // 更新加粗的 3D 路徑 (TubeGeometry)
+                if (rescueRouteLine && rescuePathPoints.length >= 2) {
+                    const curve = new THREE.CatmullRomCurve3(rescuePathPoints);
+                    rescueRouteLine.geometry.dispose();
+                    rescueRouteLine.geometry = new THREE.TubeGeometry(curve, 20 * rescuePathPoints.length, 0.08, 8, false);
+                }
+
+                setTimeout(loadQuestion, 1200);
+            } else {
+                // 答錯
+                successRate -= 10;
+                updateProgressUI();
+                // 移除 currentQ++，讓玩家停留在原題目
+                optionsDiv.innerHTML = `<div class="text-red-400 text-center font-bold py-6 text-lg animate-pulse"><i class="fa-solid fa-triangle-exclamation mr-2"></i>回答錯誤！成功率下降 10%！</div>`;
+                triggerDamageEffect();
+                setTimeout(loadQuestion, 1200);
+            }
+        }
+
+        function updateProgressUI() {
+            document.getElementById('progress-text').innerText = successRate + "%";
+            document.getElementById('progress-bar').style.width = successRate + "%";
+        }
+
+        function failMission(reason) {
+            showPanel('panel-fail', '任務失敗');
+            document.getElementById('fail-reason').innerText = reason;
+            document.getElementById('system-status').innerText = "系統錯誤：與探險隊失去聯繫";
+            document.getElementById('system-status').classList.replace('text-slate-400', 'text-red-400');
+        }
+        // ------------------
+
+        function sendRoute() {
+            showPanel('panel-success', '5. 任務完成');
+            document.getElementById('system-status').innerText = "短報文發送成功，目標已脫離險境。";
+            
+            // 變更目標點顏色為成功狀態，不再觸發地震波特效
+            targetMarker.material.color.setHex(0x00ffcc);
+            targetMarker.children[0].material.color.setHex(0x00ffcc);
+        }
+
+        // --- 2. Three.js 3D 軌道視覺化 ---
+        let scene, camera, renderer, earth, controls;
+        const satellites = [];
+
+        window.onload = function() {
+            init3D();
+            animateLoop();
+        };
+
+        function init3D() {
+            const container = document.getElementById('canvas-container');
+            
+            // 建立場景與相機
+            scene = new THREE.Scene();
+            camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 1000);
+            camera.position.set(0, 15, 30); // 初始俯角視角
+
+            // 建立渲染器
+            renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+            renderer.setSize(window.innerWidth, window.innerHeight);
+            renderer.setPixelRatio(window.devicePixelRatio);
+            container.appendChild(renderer.domElement);
+
+            // 加入軌道控制器 (允許玩家用滑鼠旋轉地球)
+            controls = new THREE.OrbitControls(camera, renderer.domElement);
+            controls.enableDamping = true;
+            controls.dampingFactor = 0.05;
+            controls.enablePan = false;
+            controls.minDistance = 6; // 允許鏡頭拉得更近
+            controls.maxDistance = 50;
+
+            // 新增：模擬星空背景
+            const starsGeo = new THREE.BufferGeometry();
+            const starsCount = 1500;
+            const posArray = new Float32Array(starsCount * 3);
+            for(let i=0; i<starsCount*3; i++) {
+                posArray[i] = (Math.random() - 0.5) * 200;
+            }
+            starsGeo.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+            const starsMat = new THREE.PointsMaterial({size: 0.2, color: 0xffffff, transparent: true, opacity: 0.8});
+            const starMesh = new THREE.Points(starsGeo, starsMat);
+            scene.add(starMesh);
+
+            // 建立地球 (Wireframe 科技感風格)
+            const earthGeo = new THREE.SphereGeometry(5, 32, 32);
+            // 兩層材質：深藍色實體 + 淺藍色線框
+            const earthMat = new THREE.MeshPhongMaterial({ color: 0x0f172a, transparent: true, opacity: 0.9 });
+            earth = new THREE.Mesh(earthGeo, earthMat);
+            
+            const wireframeMat = new THREE.MeshBasicMaterial({ color: 0x38bdf8, wireframe: true, transparent: true, opacity: 0.2 });
+            const earthWireframe = new THREE.Mesh(earthGeo, wireframeMat);
+            earth.add(earthWireframe);
+            scene.add(earth);
+
+            // 加入光源
+            const ambientLight = new THREE.AmbientLight(0xffffff, 0.5);
+            scene.add(ambientLight);
+            const pointLight = new THREE.PointLight(0x38bdf8, 1);
+            pointLight.position.set(20, 20, 20);
+            scene.add(pointLight);
+
+            // 建立北斗衛星星座 (環繞地球)
+            function createSatModel() {
+                const group = new THREE.Group();
+                // 衛星本體 (金色)
+                const body = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.3, 0.3), new THREE.MeshPhongMaterial({ color: 0xffd700 }));
+                group.add(body);
+                // 太陽能板 (藍色)
+                const panel = new THREE.Mesh(new THREE.BoxGeometry(1.6, 0.05, 0.4), new THREE.MeshPhongMaterial({ color: 0x0284c7 }));
+                group.add(panel);
+                return group;
+            }
+
+            for(let i=0; i<6; i++) {
+                const sat = createSatModel(); // 使用真實衛星模型
+                // 隨機設定軌道參數
+                const radius = 8 + Math.random() * 4; // 高度
+                const speed = 0.005 + Math.random() * 0.005;
+                const angle = (Math.PI * 2 / 6) * i;
+                const tilt = Math.random() * Math.PI - (Math.PI/2); // 傾角
+
+                satellites.push({ mesh: sat, radius: radius, angle: angle, speed: speed, tilt: tilt });
+                scene.add(sat);
+                
+                // 畫出衛星軌道線
+                const orbitPath = new THREE.Path();
+                orbitPath.absarc(0, 0, radius, 0, Math.PI * 2, false);
+                const orbitGeo = new THREE.BufferGeometry().setFromPoints(orbitPath.getPoints(64));
+                const orbitMat = new THREE.LineBasicMaterial({ color: 0xfacc15, transparent: true, opacity: 0.1 });
+                const orbitLine = new THREE.Line(orbitGeo, orbitMat);
+                orbitLine.rotation.x = Math.PI / 2;
+                orbitLine.rotation.y = tilt;
+                scene.add(orbitLine);
+            }
+
+            // 監聽視窗大小改變
+            window.addEventListener('resize', onWindowResize, false);
+        }
+
+        // 經緯度轉換為 3D 座標 (地球半徑為 5)
+        function getCartesianCoord(lat, lon, radius) {
+            const phi = (90 - lat) * (Math.PI / 180);
+            const theta = (lon + 180) * (Math.PI / 180);
+            const x = -(radius * Math.sin(phi) * Math.cos(theta));
+            const z = (radius * Math.sin(phi) * Math.sin(theta));
+            const y = (radius * Math.cos(phi));
+            return new THREE.Vector3(x, y, z);
+        }
+
+        // 顯示目標求救點
+        function showTargetOnEarth(lat, lon) {
+            if (targetMarker) scene.remove(targetMarker);
+            
+            const markerGeo = new THREE.SphereGeometry(0.3, 16, 16);
+            const markerMat = new THREE.MeshBasicMaterial({ color: 0xef4444 }); // 紅色標記
+            targetMarker = new THREE.Mesh(markerGeo, markerMat);
+            
+            // 加上光暈
+            const glowGeo = new THREE.SphereGeometry(0.5, 16, 16);
+            const glowMat = new THREE.MeshBasicMaterial({ color: 0xef4444, transparent: true, opacity: 0.4 });
+            const glow = new THREE.Mesh(glowGeo, glowMat);
+            targetMarker.add(glow);
+
+            const pos = getCartesianCoord(lat, lon, 5);
+            targetMarker.position.copy(pos);
+            targetMarkerTargetPos = pos.clone(); // 記錄追蹤點初始位置
+            earth.add(targetMarker); // 將標記加到地球上，這樣地球旋轉時標記會跟著動
+
+            // 初始化救援路線物件 (加粗的綠色 3D 拖尾)
+            if (!rescueRouteLine) {
+                rescuePathPoints = [
+                    getCartesianCoord(lat, lon, 5.05),
+                    getCartesianCoord(lat + 0.01, lon + 0.01, 5.05) // TubeGeometry 至少需要兩點
+                ];
+                const curve = new THREE.CatmullRomCurve3(rescuePathPoints);
+                const routeGeo = new THREE.TubeGeometry(curve, 20, 0.08, 8, false);
+                const routeMat = new THREE.MeshBasicMaterial({ color: 0x00ffcc, transparent: true, opacity: 0.9 });
+                rescueRouteLine = new THREE.Mesh(routeGeo, routeMat);
+                earth.add(rescueRouteLine);
+            }
+        }
+
+        // 相機聚焦動畫 (簡化版，直接設定位置)
+        function focusCameraOnTarget() {
+            // 稍微把相機拉近
+            camera.position.set(0, 10, 20);
+            controls.update();
+        }
+
+        // 建立衛星到目標的雷射連線
+        function createLaserBeam(satPos, targetPosAbsolute) {
+            // 注意：因為 targetMarker 是 earth 的子物件，所以要取得它的世界座標
+            const targetWorldPos = new THREE.Vector3();
+            targetMarker.getWorldPosition(targetWorldPos);
+
+            const lineGeo = new THREE.BufferGeometry().setFromPoints([satPos, targetWorldPos]);
+            const lineMat = new THREE.LineBasicMaterial({ color: 0x38bdf8, linewidth: 2 });
+            const laser = new THREE.Line(lineGeo, lineMat);
+            scene.add(laser);
+            
+            // 儲存起來以便在動畫循環中更新位置
+            satConnections.push({
+                line: laser,
+                satPos: satPos, // 參照
+                targetObj: targetMarker
+            });
+        }
+
+        function onWindowResize() {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        }
+
+        function animateLoop() {
+            requestAnimationFrame(animateLoop);
+
+            // 讓地球緩慢自轉 (放慢轉速以利追蹤視角)
+            earth.rotation.y += 0.0005;
+
+            // 更新衛星位置
+            satellites.forEach(sat => {
+                sat.angle += sat.speed;
+                // 計算 3D 軌道位置 (考慮傾角)
+                const x = Math.cos(sat.angle) * sat.radius;
+                const z = Math.sin(sat.angle) * sat.radius;
+                
+                // 套用傾角旋轉
+                sat.mesh.position.x = x * Math.cos(sat.tilt);
+                sat.mesh.position.y = x * Math.sin(sat.tilt);
+                sat.mesh.position.z = z;
+                
+                // 讓衛星太陽能板永遠面向地球
+                sat.mesh.lookAt(earth.position);
+            });
+
+            // 更新雷射光束的位置 (讓光束跟隨衛星和轉動的地球)
+            satConnections.forEach(conn => {
+                const targetWorldPos = new THREE.Vector3();
+                conn.targetObj.getWorldPosition(targetWorldPos);
+                
+                conn.line.geometry.setFromPoints([
+                    conn.satPos, // 衛星目前位置
+                    targetWorldPos // 目標目前的世界座標
+                ]);
+            });
+
+            // 如果有目標標記，讓光暈閃爍並處理平滑移動
+            if (targetMarker) {
+                const scale = 1 + Math.sin(Date.now() * 0.005) * 0.2;
+                targetMarker.children[0].scale.set(scale, scale, scale);
+
+                // 目標平滑移動 (Lerp 動畫)
+                if (targetMarkerTargetPos) {
+                    targetMarker.position.lerp(targetMarkerTargetPos, 0.05);
+                }
+            }
+            
+            // 啟 বুদ্ধ追蹤：鏡頭平滑注視到目標點
+            if (trackingTarget && targetMarker) {
+                const worldTarget = new THREE.Vector3();
+                targetMarker.getWorldPosition(worldTarget);
+                
+                // 鏡頭自動拉近至目標點正上方，距離設為 8 大幅增強放大效果
+                const idealCamPos = worldTarget.clone().normalize().multiplyScalar(8);
+                camera.position.lerp(idealCamPos, 0.06); // 加速平移
+                controls.target.lerp(worldTarget, 0.1); // 加速注視
+            }
+
+            controls.update();
+            renderer.render(scene, camera);
+        }
+    </script>
+</body>
+</html>
